@@ -12,7 +12,7 @@
 Unit measure temperature, relative humidity, illuminance and atmospheric pressure.
 Values is sent every 15 minutes over LoRaWAN. Values are the arithmetic mean of the measured values since the last send.
 
-Measure interval is 30s for temperature, relative humidity, illuminance, orientation. And 5minutes for atmospheric pressure.
+Measure interval is 60s for temperature, relative humidity, illuminance, orientation. And 5minutes for atmospheric pressure and CO2.
 The battery is measured during transmission.
 
 ## Buffer
