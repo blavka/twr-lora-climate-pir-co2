@@ -16,8 +16,8 @@ header_lut = {
 
 
 def decode(data):
-    if len(data) != 20:
-        raise Exception("Bad data length, 20 characters expected")
+    if len(data) != 32:
+        raise Exception("Bad data length, 32 characters expected")
 
     header = int(data[0:2], 16)
 
@@ -36,6 +36,8 @@ def decode(data):
         "humidity": int(data[10:12], 16) / 2.0 if data[10:12] != 'ff' else None,
         "illuminance": int(data[12:16], 16) if data[12:16] != 'ffff' else None,
         "pressure": int(data[16:20], 16) * 2 if data[16:20] != 'ffff' else None,
+        "pir_motion_count": int(data[20:28], 16) if data[20:28] != 'ffffffff' else None,
+        "co2": int(data[28:32], 16) if data[28:32] != 'ffff' else None
     }
 
 
@@ -47,12 +49,15 @@ def pprint(data):
     print('Humidity :', data['humidity'])
     print('Illuminance :', data['illuminance'])
     print('Pressure :', data['pressure'])
+    print('PIR motion count :', data['pir_motion_count'])
+    print('CO2 :', data['co2'])
+
 
 if __name__ == '__main__':
     if len(sys.argv) != 2 or sys.argv[1] in ('help', '-h', '--help'):
         print("usage: python3 decode.py [data]")
-        print("example: python3 decode.py 011b0100f5600024c313")
+        print("example: python3 decode.py 001E0100F5540070C1BE00000001FFFF")
         exit(1)
 
-    data = decode(sys.argv[1])
+    data = decode(sys.argv[1].lower())
     pprint(data)

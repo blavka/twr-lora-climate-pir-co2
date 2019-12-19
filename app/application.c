@@ -1,9 +1,10 @@
 #include <application.h>
 #include <at.h>
 
-#define SEND_DATA_INTERVAL        (15 * 60 * 1000)
-#define MEASURE_INTERVAL               (30 * 1000)
-#define MEASURE_INTERVAL_BAROMETER (5 * 60 * 1000)
+#define SEND_DATA_INTERVAL          (15 * 60 * 1000)
+#define MEASURE_INTERVAL            (1 * 60 * 1000)
+#define MEASURE_INTERVAL_BAROMETER  (5 * 60 * 1000)
+#define MEASURE_INTERVAL_CO2        (5 * 60 * 1000)
 
 // LED instance
 bc_led_t led;
@@ -14,12 +15,17 @@ bc_cmwx1zzabz_t lora;
 // Accelerometer instance
 bc_lis2dh12_t lis2dh12;
 bc_dice_t dice;
+// PIR instance
+bc_module_pir_t pir;
+
+uint32_t pir_motion_count = 0;
 
 BC_DATA_STREAM_FLOAT_BUFFER(sm_voltage_buffer, 8)
 BC_DATA_STREAM_FLOAT_BUFFER(sm_temperature_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL))
 BC_DATA_STREAM_FLOAT_BUFFER(sm_humidity_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL))
 BC_DATA_STREAM_FLOAT_BUFFER(sm_illuminance_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL))
 BC_DATA_STREAM_FLOAT_BUFFER(sm_pressure_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL_BAROMETER))
+BC_DATA_STREAM_FLOAT_BUFFER(sm_co2_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL_BAROMETER))
 BC_DATA_STREAM_INT_BUFFER(sm_orientation_buffer, 3)
 
 bc_data_stream_t sm_voltage;
@@ -27,6 +33,7 @@ bc_data_stream_t sm_temperature;
 bc_data_stream_t sm_humidity;
 bc_data_stream_t sm_illuminance;
 bc_data_stream_t sm_pressure;
+bc_data_stream_t sm_co2;
 bc_data_stream_t sm_orientation;
 
 bc_scheduler_task_id_t battery_measure_task_id;
@@ -52,6 +59,35 @@ void button_event_handler(bc_button_t *self, bc_button_event_t event, void *even
         header = HEADER_BUTTON_HOLD;
 
         bc_scheduler_plan_now(0);
+    }
+}
+
+void pir_event_handler(bc_module_pir_t *self, bc_module_pir_event_t event, void *event_param)
+{
+    (void) self;
+    (void) event_param;
+
+    if (event == BC_MODULE_PIR_EVENT_MOTION)
+    {
+        //bc_led_pulse(&led, 50);
+        pir_motion_count++;
+    }
+}
+
+void co2_module_event_handler(bc_module_co2_event_t event, void *event_param)
+{
+    (void) event;
+    (void) event_param;
+
+    float value;
+
+    if (bc_module_co2_get_concentration_ppm(&value))
+    {
+        bc_data_stream_feed(&sm_co2, &value);
+    }
+    else
+    {
+        bc_data_stream_reset(&sm_co2);
     }
 }
 
@@ -173,6 +209,7 @@ bool at_status(void)
             {&sm_humidity, "Humidity", 1},
             {&sm_illuminance, "Illuminance", 1},
             {&sm_pressure, "Pressure", 0},
+            {&sm_co2, "CO2", 0},
     };
 
     for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
@@ -200,6 +237,8 @@ bool at_status(void)
         bc_atci_printf("$STATUS: \"Orientation\",", orientation);
     }
 
+    bc_atci_printf("$STATUS: \"PIR Motion count\",%d", pir_motion_count);
+
     return true;
 }
 
@@ -210,6 +249,7 @@ void application_init(void)
     bc_data_stream_init(&sm_humidity, 1, &sm_humidity_buffer);
     bc_data_stream_init(&sm_illuminance, 1, &sm_illuminance_buffer);
     bc_data_stream_init(&sm_pressure, 1, &sm_pressure_buffer);
+    bc_data_stream_init(&sm_co2, 1, &sm_co2_buffer);
     bc_data_stream_init(&sm_orientation, 1, &sm_orientation_buffer);
 
     // Initialize LED
@@ -227,6 +267,15 @@ void application_init(void)
     bc_module_climate_set_update_interval_hygrometer(MEASURE_INTERVAL);
     bc_module_climate_set_update_interval_lux_meter(MEASURE_INTERVAL);
     bc_module_climate_set_update_interval_barometer(MEASURE_INTERVAL_BAROMETER);
+
+    // Initialize PIR Module
+    bc_module_pir_init(&pir);
+    bc_module_pir_set_event_handler(&pir, pir_event_handler, NULL);
+
+    // Initilize CO2
+    bc_module_co2_init();
+    bc_module_co2_set_update_interval(MEASURE_INTERVAL_CO2);
+    bc_module_co2_set_event_handler(co2_module_event_handler, NULL);
 
     // Initialize battery
     bc_module_battery_init();
@@ -271,7 +320,7 @@ void application_task(void)
         return;
     }
 
-    static uint8_t buffer[10];
+    static uint8_t buffer[16];
 
     memset(buffer, 0xff, sizeof(buffer));
 
@@ -339,6 +388,22 @@ void application_task(void)
         uint16_t value = pressure_avg / 2.f;
         buffer[8] = value >> 8;
         buffer[9] = value;
+    }
+
+    buffer[10] = pir_motion_count >> 24;
+    buffer[11] = pir_motion_count >> 16;
+    buffer[12] = pir_motion_count >> 8;
+    buffer[13] = pir_motion_count;
+
+    float co2_avg = NAN;
+
+    bc_data_stream_get_average(&sm_co2, &co2_avg);
+
+    if (!isnan(co2_avg))
+    {
+        uint16_t value = co2_avg;
+        buffer[14] = value >> 8;
+        buffer[15] = value;
     }
 
     bc_cmwx1zzabz_send_message(&lora, buffer, sizeof(buffer));
