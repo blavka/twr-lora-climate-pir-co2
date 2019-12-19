@@ -1,10 +1,10 @@
 <a href="https://www.bigclown.com/"><img src="https://bigclown.sirv.com/logo.png" width="200" alt="BigClown Logo" align="right"></a>
 
-# Firmware for BigClown Lora Climate Monitor
+# Firmware for BigClown Lora Climate Monitor + CO2 + PIR Motion detector
 
-[![Travis](https://img.shields.io/travis/bigclownlabs/bcf-lora-climate-monitor/master.svg)](https://travis-ci.org/bigclownlabs/bcf-lora-climate-monitor)
-[![Release](https://img.shields.io/github/release/bigclownlabs/bcf-lora-climate-monitor.svg)](https://github.com/bigclownlabs/bcf-lora-climate-monitor/releases)
-[![License](https://img.shields.io/github/license/bigclownlabs/bcf-lora-climate-monitor.svg)](https://github.com/bigclownlabs/bcf-lora-climate-monitor/blob/master/LICENSE)
+[![Travis](https://img.shields.io/travis/bigclownlabs/bcf-lora-climate-pir-co2/master.svg)](https://travis-ci.org/bigclownlabs/bcf-lora-climate-pir-co2)
+[![Release](https://img.shields.io/github/release/bigclownlabs/bcf-lora-climate-pir-co2.svg)](https://github.com/bigclownlabs/bcf-lora-climate-pir-co2/releases)
+[![License](https://img.shields.io/github/license/bigclownlabs/bcf-lora-climate-pir-co2.svg)](https://github.com/bigclownlabs/bcf-lora-climate-pir-co2/blob/master/LICENSE)
 [![Twitter](https://img.shields.io/twitter/follow/BigClownLabs.svg?style=social&label=Follow)](https://twitter.com/BigClownLabs)
 
 ## Description
@@ -27,6 +27,8 @@ big endian
 |       5 | HUMIDITY    | uint8  | 2        | %
 |  6 -  7 | ILLUMINANCE | uint16 |          | lux
 |  8 -  9 | PRESSURE    | uint16 | 0.5      | Pa
+| 10 - 13 | PIR MOTION  | uint32 |          |
+| 14 - 15 | CO2         | uint16 |          | ppm
 
 ### Header
 
