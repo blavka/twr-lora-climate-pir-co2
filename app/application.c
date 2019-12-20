@@ -6,6 +6,9 @@
 #define MEASURE_INTERVAL_BAROMETER  (5 * 60 * 1000)
 #define MEASURE_INTERVAL_CO2        (5 * 60 * 1000)
 
+#define CALIBRATION_START_DELAY (15 * 60 * 1000)
+#define CALIBRATION_MEASURE_INTERVAL (2 * 60 * 1000)
+
 // LED instance
 bc_led_t led;
 // Button instance
@@ -46,6 +49,56 @@ enum {
 
 } header = HEADER_BOOT;
 
+bc_scheduler_task_id_t calibration_task_id = 0;
+int calibration_counter;
+
+void calibration_task(void *param);
+
+void calibration_start()
+{
+    calibration_counter = 32;
+
+    bc_led_set_mode(&led, BC_LED_MODE_BLINK_FAST);
+    calibration_task_id = bc_scheduler_register(calibration_task, NULL, bc_tick_get() + CALIBRATION_START_DELAY);
+    bc_atci_printf("$CO2_CALIBRATION: \"START\"");
+}
+
+void calibration_stop()
+{
+    if (!calibration_task_id)
+    {
+        return;
+    }
+
+    bc_led_set_mode(&led, BC_LED_MODE_OFF);
+    bc_scheduler_unregister(calibration_task_id);
+    calibration_task_id = 0;
+
+    bc_module_co2_set_update_interval(MEASURE_INTERVAL_CO2);
+    bc_atci_printf("$CO2_CALIBRATION: \"STOP\"");
+}
+
+void calibration_task(void *param)
+{
+    (void) param;
+
+    bc_led_set_mode(&led, BC_LED_MODE_BLINK_SLOW);
+
+    bc_atci_printf("$CO2_CALIBRATION_COUNTER: \"%d\"", calibration_counter);
+
+    bc_module_co2_set_update_interval(CALIBRATION_MEASURE_INTERVAL);
+    bc_module_co2_calibration(BC_LP8_CALIBRATION_BACKGROUND_FILTERED);
+
+    calibration_counter--;
+
+    if (calibration_counter == 0)
+    {
+        calibration_stop();
+    }
+
+    bc_scheduler_plan_current_relative(CALIBRATION_MEASURE_INTERVAL);
+}
+
 void button_event_handler(bc_button_t *self, bc_button_event_t event, void *event_param)
 {
     if (event == BC_BUTTON_EVENT_CLICK)
@@ -56,9 +109,14 @@ void button_event_handler(bc_button_t *self, bc_button_event_t event, void *even
     }
     else if (event == BC_BUTTON_EVENT_HOLD)
     {
-        header = HEADER_BUTTON_HOLD;
-
-        bc_scheduler_plan_now(0);
+        if (!calibration_task_id)
+        {
+            calibration_start();
+        }
+        else
+        {
+            calibration_stop();
+        }
     }
 }
 
@@ -84,6 +142,11 @@ void co2_module_event_handler(bc_module_co2_event_t event, void *event_param)
     if (bc_module_co2_get_concentration_ppm(&value))
     {
         bc_data_stream_feed(&sm_co2, &value);
+
+        if (calibration_task_id)
+        {
+            bc_atci_printf("$CO2_CALIBRATION_CO2_VALUE: \"%f\"", value);
+        }
     }
     else
     {
@@ -195,6 +258,20 @@ bool at_send(void)
     return true;
 }
 
+bool at_calibration(void)
+{
+    if (calibration_task_id)
+    {
+        calibration_stop();
+    }
+    else
+    {
+        calibration_start();
+    }
+
+    return true;
+}
+
 bool at_status(void)
 {
     float value_avg = NAN;
@@ -301,6 +378,7 @@ void application_init(void)
     static const bc_atci_command_t commands[] = {
             AT_LORA_COMMANDS,
             {"$SEND", at_send, NULL, NULL, NULL, "Immediately send packet"},
+            {"$CALIBRATION", at_calibration, NULL, NULL, NULL, "Immediately send packet"},
             {"$STATUS", at_status, NULL, NULL, NULL, "Show status"},
             AT_LED_COMMANDS,
             BC_ATCI_COMMAND_CLAC,

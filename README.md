@@ -35,13 +35,25 @@ big endian
 * 0 - bool
 * 1 - update
 * 2 - button click
-* 3 - button hold
 
 ## AT
 
 ```sh
 picocom -b 115200 --omap crcrlf  --echo /dev/ttyUSB0
 ```
+
+## CO2 Calibration
+
+Calibration could be started by long pressing of the button on Core Module or by typing `AT$CALIBRATION` AT command. The LED starts to blink.
+
+After the calibration starts, put the device outside to calibrate to the 400 ppm level by clean outside air. First 15 minutes the LED is blinking fast and this delay is used so the clean outdoor air can flow inside the CO2 sensor.
+
+After initial 15 minutes, the LED starts to blink slower and is doing 32 measurements with 2 minute period between measurements. This second stage takes 64 minutes.
+
+After 32 samples the device will switch to normal operation and LED will stop blinking.
+You can watch the calibration proces over USB. In the AT console there are debug commands. However the device muset be outdoor for proper calibration.
+
+Calibration could be interrupted by long pressing of the button or by typing `AT$CALIBRATION` AT command. The LED stops blinking.
 
 ## License
 
