@@ -2,9 +2,9 @@
 
 # Firmware for HARDWARIO Lora Climate Monitor + CO2 + PIR Motion detector
 
-[![Travis](https://img.shields.io/travis/bigclownlabs/bcf-lora-climate-pir-co2/master.svg)](https://travis-ci.org/bigclownlabs/bcf-lora-climate-pir-co2)
-[![Release](https://img.shields.io/github/release/bigclownlabs/bcf-lora-climate-pir-co2.svg)](https://github.com/bigclownlabs/bcf-lora-climate-pir-co2/releases)
-[![License](https://img.shields.io/github/license/bigclownlabs/bcf-lora-climate-pir-co2.svg)](https://github.com/bigclownlabs/bcf-lora-climate-pir-co2/blob/master/LICENSE)
+[![Travis](https://img.shields.io/travis/bigclownprojects/bcf-lora-climate-pir-co2/master.svg)](https://travis-ci.org/bigclownprojects/bcf-lora-climate-pir-co2)
+[![Release](https://img.shields.io/github/release/bigclownprojects/bcf-lora-climate-pir-co2.svg)](https://github.com/bigclownprojects/bcf-lora-climate-pir-co2/releases)
+[![License](https://img.shields.io/github/license/bigclownprojects/bcf-lora-climate-pir-co2.svg)](https://github.com/bigclownprojects/bcf-lora-climate-pir-co2/blob/master/LICENSE)
 [![Twitter](https://img.shields.io/twitter/follow/hardwario_en.svg?style=social&label=Follow)](https://twitter.com/hardwario_en)
 
 ## Description
