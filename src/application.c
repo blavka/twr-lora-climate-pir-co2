@@ -319,6 +319,14 @@ bool at_status(void)
     return true;
 }
 
+#if defined(GIT_VERSION) && defined(BUILD_DATE)
+static bool at_version()
+{
+    twr_atci_printfln("$VER: %s built on %s", GIT_VERSION, BUILD_DATE);
+    return true;
+}
+#endif
+
 void application_init(void)
 {
     twr_data_stream_init(&sm_voltage, 1, &sm_voltage_buffer);
@@ -380,6 +388,9 @@ void application_init(void)
             {"$SEND", at_send, NULL, NULL, NULL, "Immediately send packet"},
             {"$CALIBRATION", at_calibration, NULL, NULL, NULL, "Immediately send packet"},
             {"$STATUS", at_status, NULL, NULL, NULL, "Show status"},
+            #if defined(GIT_VERSION) && defined(BUILD_DATE)
+            {"$VER", at_version, NULL, NULL, NULL, "Show firmware version and build date"},
+            #endif
             AT_LED_COMMANDS,
             TWR_ATCI_COMMAND_CLAC,
             TWR_ATCI_COMMAND_HELP
