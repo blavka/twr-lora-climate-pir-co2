@@ -428,6 +428,8 @@ static bool _at_param_format_and_test(twr_atci_param_t *param, uint8_t length)
             continue;
         }
 
+        twr_atci_printf("STRING IS NOT HEX");
+
         return false;
     }
 
