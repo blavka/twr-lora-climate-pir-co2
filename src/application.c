@@ -1,5 +1,22 @@
+/*
+TODO
+1. update cur_time with unix time stamp when receiving downlink
+2. convert unix timestamp to struct tm + 11twr_rtc_set_datetime
+
+3. display sensor data page (refactor menu nav)
+4. display buttons (context sensitive to page num)
+5. Calibration page with cut status + cancel
+6. Lora page + config params at top
+
+7. ABC calibration every 7 days with enable flag at top and other configs
+
+8. Last 2 bytes of downlink can schedule things like calibrate, homing message, cur location / dev name
+
+*/
+
 #include <application.h>
 #include <at.h>
+#include <lcd_screens.h>
 
 #define SEND_DATA_INTERVAL          (15 * 60 * 1000)
 #define MEASURE_INTERVAL            (1 * 60 * 1000)
@@ -31,7 +48,11 @@ twr_dice_t dice;
 
 uint32_t pir_motion_count = 0;
 
+uint8_t lora_recv_buffer[6]; //6 bytes for any received data
+uint32_t cur_time = 0; //unix time
+
 static void lcd_page_render();
+static void lcd_render_every_60_secs();
 void lcd_event_handler(twr_module_lcd_event_t event, void *event_param);
 bool at_calibration(void);
 
@@ -121,7 +142,6 @@ void calibration_stop()
     }
 
     twr_led_set_mode(&led, TWR_LED_MODE_OFF);
-    ////twr_led_set_mode(lcd_led, TWR_LED_MODE_OFF);
 
     twr_scheduler_unregister(calibration_task_id);
     calibration_task_id = 0;
@@ -165,10 +185,12 @@ static void lcd_page_render()
 
     twr_module_lcd_clear();
 
+    renderDateTime();
+
     if ((page_index <= MAX_PAGE_INDEX) && (page_index != PAGE_INDEX_MENU))
     {
         twr_module_lcd_set_font(&twr_font_ubuntu_15);
-        twr_module_lcd_draw_string(10, 5, pages[page_index].name0, true);
+        twr_module_lcd_draw_string(10, 10, pages[page_index].name0, true);
 
         twr_module_lcd_set_font(&twr_font_ubuntu_28);
 
@@ -229,6 +251,14 @@ static void lcd_page_render()
     twr_module_lcd_draw_string(55, 115, str, true);
 
     twr_system_pll_disable();
+}
+
+//scheduler to render lcd every 60 seconds no matter what for clock purpii
+static void lcd_render_every_60_secs() {
+    
+    twr_scheduler_plan_now(lcd_task_id);
+
+    twr_scheduler_plan_current_from_now(60*1000);
 }
 
 //button handler
@@ -343,6 +373,7 @@ void lcd_task(void *param)
 
     twr_module_lcd_update();
 }
+
 
 /*
 void button_event_handler(twr_button_t *self, twr_button_event_t event, void *event_param)
@@ -543,6 +574,11 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
         twr_atci_printf("$JOIN_ERROR");
     }
 
+    else if(event == TWR_CMWX1ZZABZ_EVENT_MESSAGE_RECEIVED) {
+
+        twr_cmwx1zzabz_get_received_message_data(self, lora_recv_buffer, 6);
+    }
+
     //twr_scheduler_plan_now(lcd_task_id); //update lcd
 }
 
@@ -557,7 +593,7 @@ bool at_calibration(void)
 {
     if (calibration_task_id)
     {
-       // calibration_stop();
+       calibration_stop();
     }
     else
     {
@@ -615,11 +651,13 @@ bool at_status(void)
     return true;
 }
 
-void link_check(void) {
+_Bool link_check(void) {
     if(twr_cmwx1zzabz_link_check(&lora))
         twr_atci_printf("LINK GOOD");
     else
         twr_atci_printf("LINK BAD");
+
+    return true;
 }
 
 void application_init(void)
@@ -679,6 +717,7 @@ void application_init(void)
     twr_module_lcd_set_event_handler(lcd_event_handler, NULL);
     twr_module_lcd_set_button_hold_time(1000);   
     lcd_task_id = twr_scheduler_register(lcd_task, NULL, 2020);
+    lcd_render_every_60_secs();
 
     //const lcd_led = twr_module_lcd_get_led_driver();
     //twr_led_init(lcd_led);
