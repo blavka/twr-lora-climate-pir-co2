@@ -1,9 +1,9 @@
 /*
 TODO
-1. update cur_time with unix time stamp when receiving downlink
-2. convert unix timestamp to struct tm + 11twr_rtc_set_datetime
+1. update cur_time with unix time stamp when receiving downlink (adjust for transmission counter array)
+2. convert unix timestamp to struct tm + twr_rtc_set_datetime
 
-3. display sensor data page (refactor menu nav)
+3. ubuntu font between 15 and 24 - 20 for temp
 4. display buttons (context sensitive to page num)
 5. Calibration page with cut status + cancel
 6. Lora page + config params at top
@@ -28,7 +28,7 @@ TODO
 
 #define CALIBRATION_NUM_SAMPLES 32 
 
-#define MAX_PAGE_INDEX 1
+#define MAX_PAGE_INDEX 2
 #define PAGE_INDEX_MENU -1
 
 // LED instance
@@ -42,6 +42,8 @@ twr_lis2dh12_t lis2dh12;
 twr_dice_t dice;
 // PIR instance
 //twr_module_pir_t pir;
+
+uint8_t transmission_counter = 0; //for syncing uplinks to downlinks
 
 //leds on lcd display
 //twr_led_driver_t *lcd_led;
@@ -64,7 +66,6 @@ static struct
 } lcd;
 
 static int page_index = 0;
-static int menu_item = 0;
 
 TWR_DATA_STREAM_FLOAT_BUFFER(sm_voltage_buffer, 8)
 TWR_DATA_STREAM_FLOAT_BUFFER(sm_battery_pct_buffer, 8)
@@ -84,6 +85,7 @@ twr_data_stream_t sm_pressure;
 twr_data_stream_t sm_co2;
 twr_data_stream_t sm_orientation;
 
+/*
 static const struct
 {
     char *name0;
@@ -102,6 +104,14 @@ static const struct
 
     {"Battery %     ", "%.0f", &sm_battery_pct, "%",
      "Voltage       ", "%.2f", &sm_voltage, "V"},
+};
+*/
+static const struct {
+    void (*renderFunction)();
+} sections[] = {
+    { &renderMeasurements },
+    { &renderCalibration },
+    { &renderLora }
 };
 
 twr_scheduler_task_id_t battery_measure_task_id;
@@ -173,19 +183,18 @@ void calibration_task(void *param)
 
 static void lcd_page_render()
 {
-    int w;
-    char str[32];
-
     twr_atci_printf("LCD RENDER");
-
-    float avg_val1 = NAN; //tmp var to store cur avg value for lcd display
-    float avg_val2 = NAN;
 
     twr_system_pll_enable();
 
     twr_module_lcd_clear();
 
     renderDateTime();
+    renderBtns();
+
+    sections[page_index].renderFunction();
+
+    /*
 
     if ((page_index <= MAX_PAGE_INDEX) && (page_index != PAGE_INDEX_MENU))
     {
@@ -223,7 +232,7 @@ static void lcd_page_render()
             
             twr_module_lcd_set_font(&twr_font_ubuntu_24);
 
-            sprintf(str, "%s", "Calibrating"); //LOADING
+            sprintf(str, "%s", "Calibrating"); 
             w = twr_module_lcd_draw_string(5, 75, str, true);
         }
 
@@ -245,11 +254,13 @@ static void lcd_page_render()
             twr_module_lcd_draw_string(w, 85, pages[page_index].unit1, true);
         }
     }
+    */
 
+    /*
     snprintf(str, sizeof(str), "%d/%d", page_index + 1, MAX_PAGE_INDEX + 1);
     twr_module_lcd_set_font(&twr_font_ubuntu_13);
     twr_module_lcd_draw_string(55, 115, str, true);
-
+    */
     twr_system_pll_disable();
 }
 
@@ -268,10 +279,12 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
 
     if (event == TWR_MODULE_LCD_EVENT_LEFT_CLICK)
     {
+
+        /*
         header = HEADER_BUTTON_CLICK;
 
-        twr_scheduler_plan_now(0); //should send lora data
-
+        
+         */
         /*
         if ((page_index != PAGE_INDEX_MENU))
         {
@@ -292,15 +305,21 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
                 menu_item = 0;
             }
         }
+        */
 
-        static uint16_t left_event_count = 0;
-        left_event_count++;
+        page_index--;
+        page_index = page_index < 0 ? MAX_PAGE_INDEX : page_index;
+
+        //static uint16_t left_event_count = 0;
+        //left_event_count++;
         //twr_radio_pub_event_count(TWR_RADIO_PUB_EVENT_LCD_BUTTON_LEFT, &left_event_count);
 
-        */
+        twr_scheduler_plan_now(lcd_task_id);
     }
     else if(event == TWR_MODULE_LCD_EVENT_RIGHT_CLICK)
     {
+
+        /*
         if ((page_index != PAGE_INDEX_MENU) || (menu_item == 0))
         {
             // Key next page
@@ -314,15 +333,21 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
                 menu_item = 0;
             }
         }
+        */
 
-        static uint16_t right_event_count = 0;
-        right_event_count++;
+        page_index++;
+        page_index = page_index > MAX_PAGE_INDEX ? 0 : page_index;
+
+        //static uint16_t right_event_count = 0;
+        //right_event_count++;
 
         twr_scheduler_plan_now(lcd_task_id);
     }
     else if(event == TWR_MODULE_LCD_EVENT_LEFT_HOLD)
     {
-        at_calibration();
+        
+         twr_scheduler_plan_now(0); //should send lora data
+
         /*
         static int left_hold_event_count = 0;
         left_hold_event_count++;
@@ -333,6 +358,8 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
     }
     else if(event == TWR_MODULE_LCD_EVENT_RIGHT_HOLD)
     {
+
+        at_calibration();
         /*
         static int right_hold_event_count = 0;
         right_hold_event_count++;
@@ -344,6 +371,8 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
     }
     else if(event == TWR_MODULE_LCD_EVENT_BOTH_HOLD)
     {
+
+       
 
         /*
         static int both_hold_event_count = 0;
@@ -577,6 +606,10 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
     else if(event == TWR_CMWX1ZZABZ_EVENT_MESSAGE_RECEIVED) {
 
         twr_cmwx1zzabz_get_received_message_data(self, lora_recv_buffer, 6);
+
+        twr_atci_printf("$RECEIVED DATA");
+
+        //todo show data
     }
 
     //twr_scheduler_plan_now(lcd_task_id); //update lcd
@@ -854,13 +887,7 @@ void application_task(void)
         buffer[8] = value >> 8;
         buffer[9] = value;
     }
-    /*
-    buffer[10] = pir_motion_count >> 24;
-    buffer[11] = pir_motion_count >> 16;
 
-    buffer[12] = pir_motion_count >> 8;
-    buffer[13] = pir_motion_count;
-    */
     float co2_avg = NAN;
 
     twr_data_stream_get_average(&sm_co2, &co2_avg);
@@ -871,6 +898,9 @@ void application_task(void)
         buffer[10] = value >> 8;
         buffer[11] = value;
     }
+
+    //monotonic counter
+    buffer[12] = transmission_counter++;
 
     if(!twr_cmwx1zzabz_send_message(&lora, buffer, sizeof(buffer)))
         twr_atci_printf("PACKET NOT SENT");
