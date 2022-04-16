@@ -3,6 +3,9 @@ TODO
 1. update cur_time with unix time stamp when receiving downlink (adjust for transmission counter array)
 2. convert unix timestamp to struct tm + twr_rtc_set_datetime
 
+2a. hold and click animation on bottom row
+2b. troubleshoot lora connectivity issues upon restart
+
 3. ubuntu font between 15 and 24 - 20 for temp
 4. display buttons (context sensitive to page num)
 5. Calibration page with cut status + cancel
@@ -18,7 +21,7 @@ TODO
 #include <at.h>
 #include <lcd_screens.h>
 
-#define SEND_DATA_INTERVAL          (15 * 60 * 1000)
+#define SEND_DATA_INTERVAL          (1 * 60 * 1000)
 #define MEASURE_INTERVAL            (1 * 60 * 1000)
 #define MEASURE_INTERVAL_BAROMETER  (5 * 60 * 1000)
 #define MEASURE_INTERVAL_CO2        (2 * 60 * 1000)
