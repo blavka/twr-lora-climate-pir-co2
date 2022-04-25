@@ -1,5 +1,7 @@
 /*
 TODO
+0. Freezes when not connected to LORA after some time
+
 1. update cur_time with unix time stamp when receiving downlink (adjust for transmission counter array)
 2. convert unix timestamp to struct tm + twr_rtc_set_datetime
 
@@ -21,10 +23,11 @@ TODO
 #include <at.h>
 #include <lcd_screens.h>
 
-#define SEND_DATA_INTERVAL          (1 * 60 * 1000)
+#define SEND_DATA_INTERVAL          (5 * 60 * 1000) //dont set this to under 5 mins or else lora issues
 #define MEASURE_INTERVAL            (1 * 60 * 1000)
 #define MEASURE_INTERVAL_BAROMETER  (5 * 60 * 1000)
 #define MEASURE_INTERVAL_CO2        (2 * 60 * 1000)
+#define MEASURE_INTERVAL_BATTERY    (5 * 60 * 1000)
 
 #define CALIBRATION_START_DELAY (30 * 1000)
 #define CALIBRATION_MEASURE_INTERVAL (30 * 1000)
@@ -36,6 +39,7 @@ TODO
 
 // LED instance
 twr_led_t led;
+twr_led_t lcdLed;
 // Button instance
 //twr_button_t button;
 // Lora instance
@@ -60,6 +64,10 @@ static void lcd_page_render();
 static void lcd_render_every_60_secs();
 void lcd_event_handler(twr_module_lcd_event_t event, void *event_param);
 bool at_calibration(void);
+
+bool is_connected = false; //TODO should be updated with link_check logic
+static void check_connection(void* param);
+static void check_connection_now();
 
 static struct
 {
@@ -117,8 +125,9 @@ static const struct {
     { &renderLora }
 };
 
-twr_scheduler_task_id_t battery_measure_task_id;
 twr_scheduler_task_id_t lcd_task_id;
+twr_scheduler_task_id_t lcd_refresh_task_id;
+twr_scheduler_task_id_t connection_check_task_id;
 
 enum {
     HEADER_BOOT         = 0x00,
@@ -142,7 +151,7 @@ void calibration_start()
     //twr_led_set_mode(lcd_led, TWR_LED_MODE_BLINK_FAST);
 
     calibration_task_id = twr_scheduler_register(calibration_task, NULL, twr_tick_get() + CALIBRATION_START_DELAY);
-    twr_atci_printf("$CO2_CALIBRATION: \"START\"");
+    twr_atci_printf("$CO2_CALIBRATION: \"START\"\r\n");
 
     twr_scheduler_plan_now(lcd_task_id); //update lcd
 }
@@ -162,7 +171,7 @@ void calibration_stop()
     twr_scheduler_plan_now(lcd_task_id); //update lcd
 
     twr_module_co2_set_update_interval(MEASURE_INTERVAL_CO2);
-    twr_atci_printf("$CO2_CALIBRATION: \"STOP\"");
+    twr_atci_printf("$CO2_CALIBRATION: \"STOP\"\r\n");
     
 }
 
@@ -173,7 +182,7 @@ void calibration_task(void *param)
     twr_led_set_mode(&led, TWR_LED_MODE_BLINK_SLOW);
    // twr_led_set_mode(lcd_led, TWR_LED_MODE_BLINK_SLOW);
 
-    twr_atci_printf("$CO2_CALIBRATION_COUNTER: \"%d\"", calibration_counter);
+    twr_atci_printf("$CO2_CALIBRATION_COUNTER: \"%d\"\r\n", calibration_counter);
 
     twr_module_co2_set_update_interval(CALIBRATION_MEASURE_INTERVAL);
     twr_module_co2_calibration(TWR_LP8_CALIBRATION_BACKGROUND_FILTERED);
@@ -186,7 +195,7 @@ void calibration_task(void *param)
 
 static void lcd_page_render()
 {
-    twr_atci_printf("LCD RENDER");
+    twr_atci_printf("LCD RENDER\r\n");
 
     twr_system_pll_enable();
 
@@ -197,73 +206,6 @@ static void lcd_page_render()
 
     sections[page_index].renderFunction();
 
-    /*
-
-    if ((page_index <= MAX_PAGE_INDEX) && (page_index != PAGE_INDEX_MENU))
-    {
-        twr_module_lcd_set_font(&twr_font_ubuntu_15);
-        twr_module_lcd_draw_string(10, 10, pages[page_index].name0, true);
-
-        twr_module_lcd_set_font(&twr_font_ubuntu_28);
-
-        twr_data_stream_get_average(pages[page_index].value0, &avg_val1);
-
-        if (isnan(avg_val1)) {
-
-            twr_module_lcd_set_font(&twr_font_ubuntu_24);
-
-            sprintf(str, "%s", "Loading"); 
-            w = twr_module_lcd_draw_string(25, 25, str, true);
-        } 
-        else {
-
-            twr_module_lcd_set_font(&twr_font_ubuntu_28);
-
-            snprintf(str, sizeof(str), pages[page_index].format0, avg_val1);
-            w = twr_module_lcd_draw_string(25, 25, str, true);
-
-            twr_module_lcd_set_font(&twr_font_ubuntu_15);
-            w = twr_module_lcd_draw_string(w, 35, pages[page_index].unit0, true);
-        }
-
-        twr_module_lcd_set_font(&twr_font_ubuntu_15);
-        twr_module_lcd_draw_string(10, 55, pages[page_index].name1, true);
-
-        twr_data_stream_get_average(pages[page_index].value1, &avg_val2);
-
-        if(!strcmp(pages[page_index].name1, "CO2           ") && calibration_task_id) {
-            
-            twr_module_lcd_set_font(&twr_font_ubuntu_24);
-
-            sprintf(str, "%s", "Calibrating"); 
-            w = twr_module_lcd_draw_string(5, 75, str, true);
-        }
-
-        else if (isnan(avg_val2)) {
-            
-            twr_module_lcd_set_font(&twr_font_ubuntu_24);
-
-            sprintf(str, "%s", "Loading"); //LOADING
-            w = twr_module_lcd_draw_string(25, 75, str, true);
-        } 
-        else {
-
-            twr_module_lcd_set_font(&twr_font_ubuntu_28);
-
-            snprintf(str, sizeof(str), pages[page_index].format1, avg_val2);
-            w = twr_module_lcd_draw_string(25, 75, str, true);
-
-            twr_module_lcd_set_font(&twr_font_ubuntu_15);
-            twr_module_lcd_draw_string(w, 85, pages[page_index].unit1, true);
-        }
-    }
-    */
-
-    /*
-    snprintf(str, sizeof(str), "%d/%d", page_index + 1, MAX_PAGE_INDEX + 1);
-    twr_module_lcd_set_font(&twr_font_ubuntu_13);
-    twr_module_lcd_draw_string(55, 115, str, true);
-    */
     twr_system_pll_disable();
 }
 
@@ -272,8 +214,33 @@ static void lcd_render_every_60_secs() {
     
     twr_scheduler_plan_now(lcd_task_id);
 
-    twr_scheduler_plan_current_from_now(60*1000);
+    twr_scheduler_plan_relative(lcd_refresh_task_id, (60 * 1000));
 }
+
+
+static void check_connection(void* param) {
+
+    bool prior_state = is_connected;
+
+    is_connected = twr_cmwx1zzabz_is_ready(&lora) && twr_cmwx1zzabz_link_check(&lora);
+
+    if(prior_state != is_connected)
+        lcd_page_render();
+
+    if(is_connected) {
+        twr_scheduler_plan_relative(connection_check_task_id, (5 * 60 * 1000));
+    }
+    else {
+        twr_scheduler_plan_relative(connection_check_task_id, (30 * 1000));
+    }
+}
+
+static void check_connection_now() {
+
+    twr_scheduler_unregister(connection_check_task_id);
+    connection_check_task_id = twr_scheduler_register(check_connection, NULL, twr_tick_get() + (1000));
+}
+
 
 //button handler
 void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
@@ -447,7 +414,7 @@ void co2_module_event_handler(twr_module_co2_event_t event, void *event_param)
     (void) event;
     (void) event_param;
 
-    twr_atci_printf("CO2 MEASUREMENT COMPLETE");
+    twr_atci_printf("CO2 MEASUREMENT COMPLETE\r\n");
 
     float value;
 
@@ -527,7 +494,7 @@ void tmp112_event_handler(twr_tmp112_t *self, twr_tmp112_event_t event, void *ev
 
 void battery_event_handler(twr_module_battery_event_t event, void *event_param)
 {
-    twr_atci_printf("BATTERY EVENT HAPPENED%d", event);
+    twr_atci_printf("BATTERY EVENT HAPPENED\r\n");
 
     if (event == TWR_MODULE_BATTERY_EVENT_UPDATE)
     {
@@ -545,14 +512,6 @@ void battery_event_handler(twr_module_battery_event_t event, void *event_param)
     }
 }
 
-void battery_measure_task(void *param)
-{
-    if (!twr_module_battery_measure())
-    {
-        twr_scheduler_plan_current_now();
-    }
-}
-
 void lis2dh12_event_handler(twr_lis2dh12_t *self, twr_lis2dh12_event_t event, void *event_param)
 {
     if (event == TWR_LIS2DH12_EVENT_UPDATE)
@@ -567,8 +526,6 @@ void lis2dh12_event_handler(twr_lis2dh12_t *self, twr_lis2dh12_event_t event, vo
 
             twr_data_stream_feed(&sm_orientation, &orientation);
         }
-
-        //twr_scheduler_plan_now(lcd_task_id); //update lcd
     }
 }
 
@@ -576,22 +533,23 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
 {
     if (event == TWR_CMWX1ZZABZ_EVENT_ERROR)
     {
-        twr_led_set_mode(&led, TWR_LED_MODE_BLINK_FAST);
+        twr_led_pulse(&lcdLed, 1500);
 
-        twr_atci_printf("$LORA ERROR");
+        twr_atci_printf("$LORA ERROR\r\n");
+
+        is_connected = false;
+        check_connection_now();
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_SEND_MESSAGE_START)
     {
         twr_led_set_mode(&led, TWR_LED_MODE_ON);
 
-        twr_scheduler_plan_relative(battery_measure_task_id, 20);
-
-        twr_atci_printf("$MESSAGE SENT START");
+        twr_atci_printf("$MESSAGE SENT START\r\n");
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_SEND_MESSAGE_DONE)
     {
         twr_led_set_mode(&led, TWR_LED_MODE_OFF);
-        twr_atci_printf("$MESSAGE SEND DONE");
+        twr_atci_printf("$MESSAGE SEND DONE\r\n");
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_READY)
     {
@@ -599,18 +557,18 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_JOIN_SUCCESS)
     {
-        twr_atci_printf("$JOIN_OK");
+        twr_atci_printf("$JOIN_OK\r\n");
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_JOIN_ERROR)
     {
-        twr_atci_printf("$JOIN_ERROR");
+        twr_atci_printf("$JOIN_ERROR\r\n");
     }
 
     else if(event == TWR_CMWX1ZZABZ_EVENT_MESSAGE_RECEIVED) {
 
         twr_cmwx1zzabz_get_received_message_data(self, lora_recv_buffer, 6);
 
-        twr_atci_printf("$RECEIVED DATA");
+        twr_atci_printf("$RECEIVED DATA\r\n");
 
         //todo show data
     }
@@ -689,9 +647,9 @@ bool at_status(void)
 
 _Bool link_check(void) {
     if(twr_cmwx1zzabz_link_check(&lora))
-        twr_atci_printf("LINK GOOD");
+        twr_atci_printf("LINK GOOD\r\n");
     else
-        twr_atci_printf("LINK BAD");
+        twr_atci_printf("LINK BAD\r\n");
 
     return true;
 }
@@ -744,8 +702,8 @@ void application_init(void)
 
     // Initialize battery
     twr_module_battery_init();
+    twr_module_battery_set_update_interval(MEASURE_INTERVAL_BATTERY);
     twr_module_battery_set_event_handler(battery_event_handler, NULL);
-    battery_measure_task_id = twr_scheduler_register(battery_measure_task, NULL, 2020);
 
     //initalize LCD + button
     //memset(&values, 0xff, sizeof(values)); //??????
@@ -753,10 +711,10 @@ void application_init(void)
     twr_module_lcd_set_event_handler(lcd_event_handler, NULL);
     twr_module_lcd_set_button_hold_time(1000);   
     lcd_task_id = twr_scheduler_register(lcd_task, NULL, 2020);
-    lcd_render_every_60_secs();
+    lcd_refresh_task_id = twr_scheduler_register(lcd_render_every_60_secs, NULL, twr_tick_get() + (60*1000));
 
-    //const lcd_led = twr_module_lcd_get_led_driver();
-    //twr_led_init(lcd_led);
+    const twr_led_driver_t* driver = twr_module_lcd_get_led_driver();
+    twr_led_init_virtual(&lcdLed, TWR_MODULE_LCD_LED_BLUE, driver, 1);
 
     twr_dice_init(&dice, TWR_DICE_FACE_UNKNOWN);
 
@@ -779,10 +737,12 @@ void application_init(void)
     //join lora network
     twr_cmwx1zzabz_join(&lora);
 
-    //TODO set link variable to result of this + regularly perform link checks or success of send
+    twr_cmwx1zzabz_set_repeat_unconfirmed(&lora, 3);
+    twr_cmwx1zzabz_set_repeat_confirmed(&lora, 3);
 
+    //set link variable to result of this + regularly perform link checks or success of send
+    connection_check_task_id = twr_scheduler_register(check_connection, NULL, twr_tick_get() + (10 * 1000));
     
-
     // Initialize AT command interface
     at_init(&led, &lora);
     static const twr_atci_command_t commands[] = {
@@ -802,12 +762,20 @@ void application_init(void)
 
 void application_task(void)
 {
-    if (!twr_cmwx1zzabz_is_ready(&lora))
+    /*
+    if (!twr_cmwx1zzabz_is_ready(&lora)) //bad form could lead to an endless loop if transmission freq is high
     {
-        twr_scheduler_plan_current_relative(100);
+        twr_scheduler_plan_current_relative(1000);
 
         return;
     }
+    */
+
+   if(!is_connected) {
+       twr_scheduler_plan_current_relative(SEND_DATA_INTERVAL);
+       return;
+   }
+
 
     static uint8_t buffer[16];
 
@@ -905,8 +873,12 @@ void application_task(void)
     //monotonic counter
     buffer[12] = transmission_counter++;
 
-    if(!twr_cmwx1zzabz_send_message(&lora, buffer, sizeof(buffer)))
-        twr_atci_printf("PACKET NOT SENT");
+    twr_led_pulse(&lcdLed, 500);
+    if(!twr_cmwx1zzabz_send_message(&lora, buffer, sizeof(buffer))) {
+        twr_atci_printf("PACKET NOT SENT\r\n");
+        is_connected = false;
+        check_connection_now();
+    }
 
     static char tmp[sizeof(buffer) * 2 + 1];
     for (size_t i = 0; i < sizeof(buffer); i++)
