@@ -1,12 +1,9 @@
 /*
 TODO
-0. Freezes when not connected to LORA after some time
-
 1. update cur_time with unix time stamp when receiving downlink (adjust for transmission counter array)
 2. convert unix timestamp to struct tm + twr_rtc_set_datetime
 
 2a. hold and click animation on bottom row
-2b. troubleshoot lora connectivity issues upon restart
 
 3. ubuntu font between 15 and 24 - 20 for temp
 4. display buttons (context sensitive to page num)
@@ -23,7 +20,9 @@ TODO
 #include <at.h>
 #include <lcd_screens.h>
 
-#define SEND_DATA_INTERVAL          (5 * 60 * 1000) //dont set this to under 5 mins or else lora issues
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+
+#define SEND_DATA_INTERVAL          (1 * 60 * 1000)
 #define MEASURE_INTERVAL            (1 * 60 * 1000)
 #define MEASURE_INTERVAL_BAROMETER  (5 * 60 * 1000)
 #define MEASURE_INTERVAL_CO2        (2 * 60 * 1000)
@@ -36,6 +35,11 @@ TODO
 
 #define MAX_PAGE_INDEX 2
 #define PAGE_INDEX_MENU -1
+
+//LoRaWAN vars (region specific) - see https://sdk.hardwario.com/group__twr__cmwx1zzabz
+twr_cmwx1zzabz_config_class_t LORA_CLASS = TWR_CMWX1ZZABZ_CONFIG_CLASS_A;
+twr_cmwx1zzabz_config_mode_t LORA_MODE = TWR_CMWX1ZZABZ_CONFIG_MODE_OTAA;
+twr_cmwx1zzabz_config_band_t LORA_BAND = TWR_CMWX1ZZABZ_CONFIG_BAND_US915;
 
 // LED instance
 twr_led_t led;
@@ -61,13 +65,20 @@ uint8_t lora_recv_buffer[6]; //6 bytes for any received data
 uint32_t cur_time = 0; //unix time
 
 static void lcd_page_render();
-static void lcd_render_every_60_secs();
 void lcd_event_handler(twr_module_lcd_event_t event, void *event_param);
 bool at_calibration(void);
 
-bool is_connected = false; //TODO should be updated with link_check logic
+bool is_joined = false;
+bool is_connected = false;
+int32_t snr = 0;
+int32_t rssi = 0;
+uint8_t margin = 0;
+uint8_t gateway_count = 0;
+
+
 static void check_connection(void* param);
 static void check_connection_now();
+static void reconnect_lora();
 
 static struct
 {
@@ -76,15 +87,15 @@ static struct
 
 } lcd;
 
-static int page_index = 0;
+int page_index = 0;
 
 TWR_DATA_STREAM_FLOAT_BUFFER(sm_voltage_buffer, 8)
 TWR_DATA_STREAM_FLOAT_BUFFER(sm_battery_pct_buffer, 8)
-TWR_DATA_STREAM_FLOAT_BUFFER(sm_temperature_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL))
-TWR_DATA_STREAM_FLOAT_BUFFER(sm_humidity_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL))
-TWR_DATA_STREAM_FLOAT_BUFFER(sm_illuminance_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL))
-TWR_DATA_STREAM_FLOAT_BUFFER(sm_pressure_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL_BAROMETER))
-TWR_DATA_STREAM_FLOAT_BUFFER(sm_co2_buffer, (SEND_DATA_INTERVAL / MEASURE_INTERVAL_CO2))
+TWR_DATA_STREAM_FLOAT_BUFFER(sm_temperature_buffer, MAX(3, (SEND_DATA_INTERVAL / MEASURE_INTERVAL)))
+TWR_DATA_STREAM_FLOAT_BUFFER(sm_humidity_buffer, MAX(3, (SEND_DATA_INTERVAL / MEASURE_INTERVAL)))
+TWR_DATA_STREAM_FLOAT_BUFFER(sm_illuminance_buffer, MAX(3, (SEND_DATA_INTERVAL / MEASURE_INTERVAL)))
+TWR_DATA_STREAM_FLOAT_BUFFER(sm_pressure_buffer, MAX(3, (SEND_DATA_INTERVAL / MEASURE_INTERVAL_BAROMETER)))
+TWR_DATA_STREAM_FLOAT_BUFFER(sm_co2_buffer, MAX(3, (SEND_DATA_INTERVAL / MEASURE_INTERVAL_CO2)))
 TWR_DATA_STREAM_INT_BUFFER(sm_orientation_buffer, 3)
 
 twr_data_stream_t sm_voltage;
@@ -96,37 +107,15 @@ twr_data_stream_t sm_pressure;
 twr_data_stream_t sm_co2;
 twr_data_stream_t sm_orientation;
 
-/*
-static const struct
-{
-    char *name0;
-    char *format0;
-    twr_data_stream_t *value0;
-    char *unit0;
-
-    char *name1;
-    char *format1;
-    twr_data_stream_t *value1;
-    char *unit1;
-
-} pages[] = {
-    {"Temperature   ", "%.1f", &sm_temperature, "\xb0" "F",
-     "CO2           ", "%.0f", &sm_co2, "ppm"},
-
-    {"Battery %     ", "%.0f", &sm_battery_pct, "%",
-     "Voltage       ", "%.2f", &sm_voltage, "V"},
-};
-*/
 static const struct {
     void (*renderFunction)();
 } sections[] = {
     { &renderMeasurements },
-    { &renderCalibration },
-    { &renderLora }
+    { &renderLora },
+    { &renderCalibration }
 };
 
 twr_scheduler_task_id_t lcd_task_id;
-twr_scheduler_task_id_t lcd_refresh_task_id;
 twr_scheduler_task_id_t connection_check_task_id;
 
 enum {
@@ -209,23 +198,21 @@ static void lcd_page_render()
     twr_system_pll_disable();
 }
 
-//scheduler to render lcd every 60 seconds no matter what for clock purpii
-static void lcd_render_every_60_secs() {
-    
-    twr_scheduler_plan_now(lcd_task_id);
-
-    twr_scheduler_plan_relative(lcd_refresh_task_id, (60 * 1000));
-}
-
-
 static void check_connection(void* param) {
+
+    twr_atci_printf("CHECK CONNECTION\r\n");
 
     bool prior_state = is_connected;
 
-    is_connected = twr_cmwx1zzabz_is_ready(&lora) && twr_cmwx1zzabz_link_check(&lora);
+    if(is_joined && twr_cmwx1zzabz_is_ready(&lora)) {
+        if(!twr_cmwx1zzabz_link_check(&lora))
+            is_connected = false;
+    }
+    else
+        is_connected = false;
 
     if(prior_state != is_connected)
-        lcd_page_render();
+        twr_scheduler_plan_now(lcd_task_id);
 
     if(is_connected) {
         twr_scheduler_plan_relative(connection_check_task_id, (5 * 60 * 1000));
@@ -250,107 +237,55 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
     if (event == TWR_MODULE_LCD_EVENT_LEFT_CLICK)
     {
 
-        /*
-        header = HEADER_BUTTON_CLICK;
-
-        
-         */
-        /*
-        if ((page_index != PAGE_INDEX_MENU))
-        {
-            // Key previous page
-            page_index--;
-            if (page_index < 0)
-            {
-                page_index = MAX_PAGE_INDEX;
-                menu_item = 0;
-            }
-        }
-        else
-        {
-            // Key menu down
-            menu_item++;
-            if (menu_item > 4)
-            {
-                menu_item = 0;
-            }
-        }
-        */
-
         page_index--;
         page_index = page_index < 0 ? MAX_PAGE_INDEX : page_index;
-
-        //static uint16_t left_event_count = 0;
-        //left_event_count++;
-        //twr_radio_pub_event_count(TWR_RADIO_PUB_EVENT_LCD_BUTTON_LEFT, &left_event_count);
 
         twr_scheduler_plan_now(lcd_task_id);
     }
     else if(event == TWR_MODULE_LCD_EVENT_RIGHT_CLICK)
     {
-
-        /*
-        if ((page_index != PAGE_INDEX_MENU) || (menu_item == 0))
-        {
-            // Key next page
-            page_index++;
-            if (page_index > MAX_PAGE_INDEX)
-            {
-                page_index = 0;
-            }
-            if (page_index == PAGE_INDEX_MENU)
-            {
-                menu_item = 0;
-            }
-        }
-        */
-
         page_index++;
         page_index = page_index > MAX_PAGE_INDEX ? 0 : page_index;
-
-        //static uint16_t right_event_count = 0;
-        //right_event_count++;
 
         twr_scheduler_plan_now(lcd_task_id);
     }
     else if(event == TWR_MODULE_LCD_EVENT_LEFT_HOLD)
     {
         
-         twr_scheduler_plan_now(0); //should send lora data
+        if(page_index == 0 && is_connected) {
+            twr_scheduler_plan_now(0); //should send lora data
+        }
+        else if(page_index == 1) {
 
-        /*
-        static int left_hold_event_count = 0;
-        left_hold_event_count++;
-        twr_radio_pub_int("push-button/lcd:left-hold/event-count", &left_hold_event_count);
+            if(is_connected) {
 
-        twr_led_pulse(&led, 100);
-        */
+                check_connection_now();
+            }
+        }
+
+
     }
     else if(event == TWR_MODULE_LCD_EVENT_RIGHT_HOLD)
     {
 
-        at_calibration();
-        /*
-        static int right_hold_event_count = 0;
-        right_hold_event_count++;
-        twr_radio_pub_int("push-button/lcd:right-hold/event-count", &right_hold_event_count);
+        if(page_index == 0) {
+            at_calibration();
+        }
+        else if(page_index == 1) {
 
-        twr_led_pulse(&led, 100);
-        */
+            if(is_connected) {
+
+                reconnect_lora();
+            }
+        }
 
     }
     else if(event == TWR_MODULE_LCD_EVENT_BOTH_HOLD)
     {
 
-       
 
-        /*
-        static int both_hold_event_count = 0;
-        both_hold_event_count++;
-        twr_radio_pub_int("push-button/lcd:both-hold/event-count", &both_hold_event_count);
 
-        twr_led_pulse(&led, 100);
-        */
+
     }
 }
 
@@ -372,30 +307,6 @@ void lcd_task(void *param)
 
     twr_module_lcd_update();
 }
-
-
-/*
-void button_event_handler(twr_button_t *self, twr_button_event_t event, void *event_param)
-{
-    if (event == TWR_BUTTON_EVENT_CLICK)
-    {
-        header = HEADER_BUTTON_CLICK;
-
-        twr_scheduler_plan_now(0);
-    }
-    else if (event == TWR_BUTTON_EVENT_HOLD)
-    {
-        if (!calibration_task_id)
-        {
-            calibration_start();
-        }
-        else
-        {
-            calibration_stop();
-        }
-    }
-}
-*/
 
 void pir_event_handler(twr_module_pir_t *self, twr_module_pir_event_t event, void *event_param)
 {
@@ -533,12 +444,17 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
 {
     if (event == TWR_CMWX1ZZABZ_EVENT_ERROR)
     {
-        twr_led_pulse(&lcdLed, 1500);
+        //twr_led_pulse(&lcdLed, 1500);
 
-        twr_atci_printf("$LORA ERROR\r\n");
-
+        twr_atci_printf("$LORA ERROR (JOIN SUCCESS)?\r\n");
+        /*
         is_connected = false;
         check_connection_now();
+        */
+
+       //Appears to be bug in custom LoRa firmware - should be a join success
+        is_joined = true;
+        twr_scheduler_plan_now(lcd_task_id); //update lcd
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_SEND_MESSAGE_START)
     {
@@ -558,10 +474,17 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
     else if (event == TWR_CMWX1ZZABZ_EVENT_JOIN_SUCCESS)
     {
         twr_atci_printf("$JOIN_OK\r\n");
+        is_joined = true;
+        twr_scheduler_plan_now(lcd_task_id); //update lcd
     }
     else if (event == TWR_CMWX1ZZABZ_EVENT_JOIN_ERROR)
     {
         twr_atci_printf("$JOIN_ERROR\r\n");
+        is_connected = false;
+        is_joined = false;
+        twr_scheduler_plan_now(lcd_task_id); //update lcd
+
+        check_connection_now();
     }
 
     else if(event == TWR_CMWX1ZZABZ_EVENT_MESSAGE_RECEIVED) {
@@ -572,8 +495,38 @@ void lora_callback(twr_cmwx1zzabz_t *self, twr_cmwx1zzabz_event_t event, void *e
 
         //todo show data
     }
+    else if(event == TWR_CMWX1ZZABZ_EVENT_LINK_CHECK_OK) {
 
-    //twr_scheduler_plan_now(lcd_task_id); //update lcd
+        bool init_connected_val = is_connected;
+
+        twr_cmwx1zzabz_get_link_check(&lora, &margin, &gateway_count);
+
+        is_connected = true;
+
+        twr_cmwx1zzabz_rfq(&lora); //request rfq vals
+
+        if(is_connected != init_connected_val)
+            twr_scheduler_plan_now(lcd_task_id); //update lcd
+
+        twr_atci_printf("LINK GOOD\r\n"); 
+    }
+    else if(event == TWR_CMWX1ZZABZ_EVENT_LINK_CHECK_NOK) {
+
+        bool init_connected_val = is_connected;
+        is_connected = false;
+
+        if(is_connected != init_connected_val)
+            twr_scheduler_plan_now(lcd_task_id); //update lcd
+
+        twr_atci_printf("LINK BAD\r\n");
+    }
+    else if (event == TWR_CMWX1ZZABZ_EVENT_RFQ)
+    {
+        twr_cmwx1zzabz_get_rfq(&lora, &rssi, &snr);
+
+        twr_scheduler_plan_now(lcd_task_id); //update lcd
+    }
+
 }
 
 bool at_send(void)
@@ -645,13 +598,37 @@ bool at_status(void)
     return true;
 }
 
-_Bool link_check(void) {
-    if(twr_cmwx1zzabz_link_check(&lora))
-        twr_atci_printf("LINK GOOD\r\n");
-    else
+bool link_check(void) { //TODO have to refactor to wait for results of link check - this just says if link check packet sent
+    if(!twr_cmwx1zzabz_link_check(&lora))
         twr_atci_printf("LINK BAD\r\n");
-
     return true;
+}
+
+void reconnect_lora() {
+
+    is_joined = false;
+    is_connected = false;
+
+    // reset lora module + set variables
+
+    twr_cmwx1zzabz_set_event_handler(&lora, lora_callback, NULL);
+    twr_cmwx1zzabz_set_class(&lora, LORA_CLASS);
+
+    //3 key variables - TODO expose through constants at top
+    twr_cmwx1zzabz_set_mode(&lora, LORA_MODE);
+    twr_cmwx1zzabz_set_nwk_public(&lora, 1);
+    twr_cmwx1zzabz_set_band(&lora, LORA_BAND);
+
+    twr_cmwx1zzabz_set_repeat_unconfirmed(&lora, 1);
+    twr_cmwx1zzabz_set_repeat_confirmed(&lora, 1);
+
+    //join lora network
+    twr_cmwx1zzabz_join(&lora);
+
+    twr_scheduler_unregister(connection_check_task_id);
+    connection_check_task_id = twr_scheduler_register(check_connection, NULL, twr_tick_get() + (30* 1000));
+
+    twr_scheduler_plan_now(lcd_task_id); //update lcd
 }
 
 void application_init(void)
@@ -711,13 +688,13 @@ void application_init(void)
     twr_module_lcd_set_event_handler(lcd_event_handler, NULL);
     twr_module_lcd_set_button_hold_time(1000);   
     lcd_task_id = twr_scheduler_register(lcd_task, NULL, 2020);
-    lcd_refresh_task_id = twr_scheduler_register(lcd_render_every_60_secs, NULL, twr_tick_get() + (60*1000));
 
     const twr_led_driver_t* driver = twr_module_lcd_get_led_driver();
     twr_led_init_virtual(&lcdLed, TWR_MODULE_LCD_LED_BLUE, driver, 1);
 
     twr_dice_init(&dice, TWR_DICE_FACE_UNKNOWN);
 
+    //accelerometer
     twr_lis2dh12_init(&lis2dh12, TWR_I2C_I2C0, 0x19);
     twr_lis2dh12_set_resolution(&lis2dh12, TWR_LIS2DH12_RESOLUTION_8BIT);
 
@@ -727,21 +704,21 @@ void application_init(void)
     // Initialize lora module + set variables
     twr_cmwx1zzabz_init(&lora, TWR_UART_UART1);
     twr_cmwx1zzabz_set_event_handler(&lora, lora_callback, NULL);
-    twr_cmwx1zzabz_set_class(&lora, TWR_CMWX1ZZABZ_CONFIG_CLASS_A);
+    twr_cmwx1zzabz_set_class(&lora, LORA_CLASS);
 
     //3 key variables - TODO expose through constants at top
-    twr_cmwx1zzabz_set_mode(&lora, TWR_CMWX1ZZABZ_CONFIG_MODE_OTAA);
     twr_cmwx1zzabz_set_nwk_public(&lora, 1);
-    twr_cmwx1zzabz_set_band(&lora, TWR_CMWX1ZZABZ_CONFIG_BAND_US915);
+    twr_cmwx1zzabz_set_band(&lora, LORA_BAND);
+    twr_cmwx1zzabz_set_mode(&lora, LORA_MODE);
+
+    twr_cmwx1zzabz_set_repeat_unconfirmed(&lora, 1);
+    twr_cmwx1zzabz_set_repeat_confirmed(&lora, 1);
 
     //join lora network
     twr_cmwx1zzabz_join(&lora);
 
-    twr_cmwx1zzabz_set_repeat_unconfirmed(&lora, 3);
-    twr_cmwx1zzabz_set_repeat_confirmed(&lora, 3);
-
     //set link variable to result of this + regularly perform link checks or success of send
-    connection_check_task_id = twr_scheduler_register(check_connection, NULL, twr_tick_get() + (10 * 1000));
+    connection_check_task_id = twr_scheduler_register(check_connection, NULL, twr_tick_get() + (30 * 1000));
     
     // Initialize AT command interface
     at_init(&led, &lora);
@@ -762,20 +739,11 @@ void application_init(void)
 
 void application_task(void)
 {
-    /*
-    if (!twr_cmwx1zzabz_is_ready(&lora)) //bad form could lead to an endless loop if transmission freq is high
-    {
-        twr_scheduler_plan_current_relative(1000);
-
-        return;
-    }
-    */
 
    if(!is_connected) {
        twr_scheduler_plan_current_relative(SEND_DATA_INTERVAL);
        return;
    }
-
 
     static uint8_t buffer[16];
 

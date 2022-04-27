@@ -11,10 +11,17 @@ extern twr_data_stream_t sm_pressure;
 extern twr_data_stream_t sm_co2;
 extern twr_data_stream_t sm_orientation;
 
-extern bool is_connected;
+extern bool is_connected, is_joined;
+extern int32_t snr;
+extern int32_t rssi;
+extern uint8_t margin;
+extern uint8_t gateway_count;
 
-uint8_t reverse_bits(uint8_t bits);
-void endian_correct_img_data(twr_image_t *);
+extern twr_cmwx1zzabz_t lora;
+
+extern int page_index;
+
+extern twr_scheduler_task_id_t calibration_task_id;
 
 uint8_t connected_img_data[] = {0x7E, 0x00, 0x03, 0xFF, 0xC0, 0x0F, 0x81, 0xF0, 0x3C, 0x00, 0x3C, 0x70, 0x00, 0x0E, 0x60, 0xFF, 0x06, 0x03, 0xFF, 0xC0, 0x0F, 0x00, 0xF0, 0x0C, 0x00, 0x30, 0x08, 0x3C, 0x10, 0x00, 0xFF, 0x00, 0x01, 0xC3, 0x80, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x18, 0x00};
 twr_image_t connected_img = { connected_img_data, 24, 18, 54 };
@@ -111,17 +118,48 @@ void renderBtns() {
     char hold_string[20];
     twr_module_lcd_set_font(&twr_font_ubuntu_11);
 
-    //hold left text
-    //TODO logic for left hold string
+    if(page_index == 0) { //main measurement summary page
 
-    strcpy(hold_string, "send data");
-    twr_module_lcd_draw_string(22, 116, hold_string, true);
+        //hold left text
+        if(is_connected)
+            strcpy(hold_string, "send data");
+        else if(is_joined)
+            strcpy(hold_string, "");
+        else
+            strcpy(hold_string, "reset conn");
 
-    //hold right text
-    //TODO logic for right hold string
-    
-    strcpy(hold_string, "calibrate");
-    twr_module_lcd_draw_string(69, 116, hold_string, true);
+        twr_module_lcd_draw_string(22, 116, hold_string, true);
+
+        //hold right text
+        strcpy(hold_string, "calibrate");
+
+        twr_module_lcd_draw_string(69, 116, hold_string, true);
+    }
+    else if(page_index == 1) { //lora
+        
+        //hold left text
+        if(is_connected)
+            strcpy(hold_string, "test conn");
+        else
+            strcpy(hold_string, "");
+
+        twr_module_lcd_draw_string(22, 116, hold_string, true);
+
+        //hold right text
+        strcpy(hold_string, "reset conn");
+
+        twr_module_lcd_draw_string(69, 116, hold_string, true);
+    }
+    else if(page_index == 2) { //calibration
+
+        //left btn
+        if(!calibration_task_id)
+            strcpy(hold_string, "calibrate");
+        else if(is_joined)
+            strcpy(hold_string, "stop cal");
+
+        twr_module_lcd_draw_string(22, 116, hold_string, true);
+    }
 }
 
 void renderMeasurements() {
@@ -204,14 +242,84 @@ void renderMeasurements() {
         twr_module_lcd_draw_image(100, 92, &disconnected_img);
 }
 
-void renderCalibration() {
-
-    twr_module_lcd_set_font(&twr_font_ubuntu_24);
-    twr_module_lcd_draw_string(2, 35, "Calibrate Stub", true);
-}
-
 void renderLora() {
 
+    char status_string[50];
+    char status_val[40];
+    char status_val2[30];
+
     twr_module_lcd_set_font(&twr_font_ubuntu_24);
-    twr_module_lcd_draw_string(5, 35, "LoRa Stub", true);
+    twr_module_lcd_draw_string(5, 12, "LoRaWAN", true);
+
+    //TODO 2d barcode
+
+    //status strings
+    twr_module_lcd_set_font(&twr_font_ubuntu_11);
+
+    //Dev EUI
+    twr_cmwx1zzabz_get_deveui(&lora, status_val);
+    snprintf(status_string, sizeof(status_string), "DevEUI %s", status_val);
+    twr_module_lcd_draw_string(5, 40, status_string, true);
+
+    //App EUI
+    twr_cmwx1zzabz_get_appeui(&lora, status_val);
+    snprintf(status_string, sizeof(status_string), "AppEUI %s", status_val);
+    twr_module_lcd_draw_string(5, 50, status_string, true);
+
+    //App Key
+    twr_module_lcd_draw_string(5, 60, "AppKey", true);
+
+    twr_cmwx1zzabz_get_appkey(&lora, status_val);
+
+    strncpy(status_val2, status_val, 20);
+    status_val2[20] = '\0';
+    snprintf(status_string, sizeof(status_string), "%s", status_val2);
+    twr_module_lcd_draw_string(5, 70, status_string, true);
+
+    strncpy(status_val2, &status_val[20], 12);
+    status_val2[12] = '\0';
+    snprintf(status_string, sizeof(status_string), "%s", status_val2);
+    twr_module_lcd_draw_string(5, 80, status_string, true);    
+
+    if(!is_connected && !is_joined) {
+        
+        twr_module_lcd_set_font(&twr_font_ubuntu_15);
+        twr_module_lcd_draw_string(5, 90, "Disconnected", true);
+    }
+    else if(is_joined) {
+
+        twr_module_lcd_set_font(&twr_font_ubuntu_15);
+        twr_module_lcd_draw_string(5, 90, "Connecting", true);  
+    }
+    else {
+
+        if(snr && rssi) {
+
+            twr_module_lcd_set_font(&twr_font_ubuntu_11);
+            
+            snprintf(status_string, sizeof(status_string), "RSSI %d  SNR %d", 
+                rssi, snr);
+
+            twr_module_lcd_draw_string(5, 90, status_string, true);
+        }
+
+        if(margin && gateway_count) {
+
+            twr_module_lcd_set_font(&twr_font_ubuntu_11);
+            
+            snprintf(status_string, sizeof(status_string), "Gateways %d  Margin %d", 
+               gateway_count, margin);
+
+            twr_module_lcd_draw_string(5, 1000, status_string, true);
+        }        
+    }
+}
+
+void renderCalibration() {
+
+    char status_string[50];
+    char status_val[30];
+
+    twr_module_lcd_set_font(&twr_font_ubuntu_15);
+    twr_module_lcd_draw_string(5, 12, "Calibration", true);
 }
