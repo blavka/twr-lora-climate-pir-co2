@@ -286,7 +286,7 @@ void renderLora() {
         twr_module_lcd_set_font(&twr_font_ubuntu_15);
         twr_module_lcd_draw_string(5, 90, "Disconnected", true);
     }
-    else if(is_joined) {
+    else if(is_joined && !is_connected) {
 
         twr_module_lcd_set_font(&twr_font_ubuntu_15);
         twr_module_lcd_draw_string(5, 90, "Connecting", true);  
