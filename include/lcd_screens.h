@@ -3,7 +3,7 @@
 
 #include <twr.h>
 
-extern uint32_t cur_time;
+extern struct tm cur_time;
 
 uint8_t reverse_bits(uint8_t bits);
 void endian_correct_img_data(twr_image_t *);

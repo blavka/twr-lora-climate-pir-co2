@@ -1,5 +1,5 @@
 #include "lcd_screens.h"
-#include <twr.h>
+#include <application.h> 
 #include <twr_atci.h>
 
 extern twr_data_stream_t sm_voltage;
@@ -22,6 +22,9 @@ extern twr_cmwx1zzabz_t lora;
 extern int page_index;
 
 extern twr_scheduler_task_id_t calibration_task_id;
+extern int calibration_counter;
+extern uint32_t time_since_last_abc_cal;
+extern uint32_t time_since_last_fresh_air_cal;
 
 uint8_t connected_img_data[] = {0x7E, 0x00, 0x03, 0xFF, 0xC0, 0x0F, 0x81, 0xF0, 0x3C, 0x00, 0x3C, 0x70, 0x00, 0x0E, 0x60, 0xFF, 0x06, 0x03, 0xFF, 0xC0, 0x0F, 0x00, 0xF0, 0x0C, 0x00, 0x30, 0x08, 0x3C, 0x10, 0x00, 0xFF, 0x00, 0x01, 0xC3, 0x80, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x18, 0x00};
 twr_image_t connected_img = { connected_img_data, 24, 18, 54 };
@@ -310,7 +313,7 @@ void renderLora() {
             snprintf(status_string, sizeof(status_string), "Gateways %d  Margin %d", 
                gateway_count, margin);
 
-            twr_module_lcd_draw_string(5, 1000, status_string, true);
+            twr_module_lcd_draw_string(5, 100, status_string, true);
         }        
     }
 }
@@ -318,8 +321,75 @@ void renderLora() {
 void renderCalibration() {
 
     char status_string[50];
-    char status_val[30];
+    uint32_t days;
+    uint32_t hours;
+    uint32_t minutes;
+    uint32_t seconds;
+    struct tm tmp_time;
 
     twr_module_lcd_set_font(&twr_font_ubuntu_15);
     twr_module_lcd_draw_string(5, 12, "Calibration", true);
+
+    if(!calibration_task_id) {
+
+        twr_module_lcd_set_font(&twr_font_ubuntu_11);
+
+        //last fresh air cal
+        if(!time_since_last_fresh_air_cal) 
+            twr_module_lcd_draw_string(5, 30, "Last Fresh Air Calibrate: Never", true);
+    
+        else {
+        
+            twr_rtc_get_datetime(&tmp_time);
+            seconds = twr_rtc_datetime_to_timestamp(&tmp_time) - time_since_last_fresh_air_cal;
+
+            days = seconds / (24*60*60);
+            hours = (seconds - (days * 60 * 60 * 24)) / (60 * 60);
+            minutes = seconds
+                - (days * 60 * 60 * 24)
+                - (hours * 60 * 60);
+
+            twr_module_lcd_draw_string(5, 30, "Last Fresh Air Calibrate", true);
+
+            snprintf(status_string, sizeof(status_string), "%d days %d hours %d minutes ago", 
+                days, hours, minutes);
+            twr_module_lcd_draw_string(5, 40, status_string, true);
+        }
+
+        //last ABC cal
+        if(!time_since_last_abc_cal) 
+            twr_module_lcd_draw_string(5, 45, "Last Automatic Calibrate: Never", true);
+        
+        else {
+        
+            twr_rtc_get_datetime(&tmp_time);
+            seconds = twr_rtc_datetime_to_timestamp(&tmp_time) - time_since_last_abc_cal;
+
+            days = seconds / (24*60*60);
+            hours = (seconds - (days * 60 * 60 * 24)) / (60 * 60);
+            minutes = seconds
+                - (days * 60 * 60 * 24)
+                - (hours * 60 * 60);
+
+            twr_module_lcd_draw_string(5, 45, "Last Automatic Calibrate", true);
+
+            snprintf(status_string, sizeof(status_string), "%d days %d hours %d minutes ago", 
+                days, hours, minutes);
+            twr_module_lcd_draw_string(5, 55, status_string, true);
+        }
+    }
+    else {
+
+        //display calibration in progress
+        twr_module_lcd_set_font(&twr_font_ubuntu_13);
+        twr_module_lcd_draw_string(5, 35, "Calibration in Progress", true);
+
+        //sample x/x
+        twr_module_lcd_set_font(&twr_font_ubuntu_24);
+        snprintf(status_string, sizeof(status_string), "%d / %d", 
+                calibration_counter, CALIBRATION_NUM_SAMPLES);
+        twr_module_lcd_draw_string(30, 60, status_string, true);
+    }
+
+   
 }
