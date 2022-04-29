@@ -16,7 +16,9 @@ TODO
 
 */
 
-#include <application.h>
+//check here for additional settings
+#include <application.h> 
+
 #include <at.h>
 #include <lcd_screens.h>
 
@@ -29,9 +31,10 @@ TODO
 #define MEASURE_INTERVAL_BATTERY    (5 * 60 * 1000)
 
 #define CALIBRATION_START_DELAY (30 * 1000)
-#define CALIBRATION_MEASURE_INTERVAL (30 * 1000)
+#define CALIBRATION_MEASURE_INTERVAL (40 * 1000)
 
-#define CALIBRATION_NUM_SAMPLES 32 
+//auto calibrate once per week (takes lowest reading during the period and assumes that is fresh air)
+#define AUTOMATIC_CALIBRATION_INTERVAL (7 * 24 * 60 * 60 * 1000)
 
 #define MAX_PAGE_INDEX 2
 #define PAGE_INDEX_MENU -1
@@ -56,13 +59,10 @@ twr_dice_t dice;
 
 uint8_t transmission_counter = 0; //for syncing uplinks to downlinks
 
-//leds on lcd display
-//twr_led_driver_t *lcd_led;
-
 uint32_t pir_motion_count = 0;
 
 uint8_t lora_recv_buffer[6]; //6 bytes for any received data
-uint32_t cur_time = 0; //unix time
+struct tm cur_time; //unix time
 
 static void lcd_page_render();
 void lcd_event_handler(twr_module_lcd_event_t event, void *event_param);
@@ -74,7 +74,6 @@ int32_t snr = 0;
 int32_t rssi = 0;
 uint8_t margin = 0;
 uint8_t gateway_count = 0;
-
 
 static void check_connection(void* param);
 static void check_connection_now();
@@ -127,17 +126,20 @@ enum {
 } header = HEADER_BOOT;
 
 twr_scheduler_task_id_t calibration_task_id = 0;
+twr_scheduler_task_id_t auto_calibration_task_id = 0;
+
 int calibration_counter;
 
-void calibration_task(void *param);
+uint32_t time_since_last_abc_cal = 0;
+uint32_t time_since_last_fresh_air_cal = 0;
+
+void calibration_task(void *);
+void auto_calibration_task(void *);
 
 void calibration_start()
 {
 
-    calibration_counter = CALIBRATION_NUM_SAMPLES;
-
-    twr_led_set_mode(&led, TWR_LED_MODE_BLINK_FAST);
-    //twr_led_set_mode(lcd_led, TWR_LED_MODE_BLINK_FAST);
+    calibration_counter = 0;
 
     calibration_task_id = twr_scheduler_register(calibration_task, NULL, twr_tick_get() + CALIBRATION_START_DELAY);
     twr_atci_printf("$CO2_CALIBRATION: \"START\"\r\n");
@@ -164,22 +166,52 @@ void calibration_stop()
     
 }
 
+void auto_calibration_task(void *param) {
+
+    (void) param;
+
+    struct tm tmp_time;
+
+    twr_atci_printf("$AUTO CALIBRATE: \"%d\"\r\n", calibration_counter);
+
+    twr_module_co2_calibration(TWR_LP8_CALIBRATION_ATWR_RF); //resets filters
+
+    twr_rtc_get_datetime(&tmp_time);
+    time_since_last_abc_cal = twr_rtc_datetime_to_timestamp(&tmp_time);
+
+    twr_scheduler_plan_now(lcd_task_id); //update lcd
+
+    twr_scheduler_plan_relative(auto_calibration_task_id, AUTOMATIC_CALIBRATION_INTERVAL);
+}
+
 void calibration_task(void *param)
 {
     (void) param;
 
-    twr_led_set_mode(&led, TWR_LED_MODE_BLINK_SLOW);
-   // twr_led_set_mode(lcd_led, TWR_LED_MODE_BLINK_SLOW);
+    calibration_counter++;
+
+    twr_scheduler_plan_now(lcd_task_id); //update lcd
+
+    twr_led_set_mode(&lcdLed, TWR_LED_MODE_BLINK_SLOW);
 
     twr_atci_printf("$CO2_CALIBRATION_COUNTER: \"%d\"\r\n", calibration_counter);
 
     twr_module_co2_set_update_interval(CALIBRATION_MEASURE_INTERVAL);
     twr_module_co2_calibration(TWR_LP8_CALIBRATION_BACKGROUND_FILTERED);
 
-    if (!--calibration_counter)
+    twr_led_set_mode(&lcdLed, TWR_LED_MODE_OFF);
+
+    if (calibration_counter == CALIBRATION_NUM_SAMPLES) {
+
+        struct tm tmp_time;
+        
         calibration_stop();
 
-    twr_scheduler_plan_current_relative(CALIBRATION_MEASURE_INTERVAL);
+        twr_rtc_get_datetime(&tmp_time);
+        time_since_last_fresh_air_cal = twr_rtc_datetime_to_timestamp(&tmp_time);
+    }
+    else
+        twr_scheduler_plan_relative(calibration_task_id, CALIBRATION_MEASURE_INTERVAL);
 }
 
 static void lcd_page_render()
@@ -236,6 +268,8 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
 
     if (event == TWR_MODULE_LCD_EVENT_LEFT_CLICK)
     {
+        if(calibration_task_id)
+            return;
 
         page_index--;
         page_index = page_index < 0 ? MAX_PAGE_INDEX : page_index;
@@ -244,6 +278,9 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
     }
     else if(event == TWR_MODULE_LCD_EVENT_RIGHT_CLICK)
     {
+        if(calibration_task_id)
+            return;
+
         page_index++;
         page_index = page_index > MAX_PAGE_INDEX ? 0 : page_index;
 
@@ -262,8 +299,8 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
                 check_connection_now();
             }
         }
-
-
+        else if(page_index == 2)
+            at_calibration();
     }
     else if(event == TWR_MODULE_LCD_EVENT_RIGHT_HOLD)
     {
@@ -282,10 +319,7 @@ void lcd_event_handler(twr_module_lcd_event_t event, void *event_param)
     }
     else if(event == TWR_MODULE_LCD_EVENT_BOTH_HOLD)
     {
-
-
-
-
+        //nothing at this time
     }
 }
 
@@ -545,6 +579,7 @@ bool at_calibration(void)
     else
     {
         calibration_start();
+        page_index = 2;
     }
 
     return true;
@@ -633,6 +668,9 @@ void reconnect_lora() {
 
 void application_init(void)
 {
+    //real time clock
+    twr_rtc_init ();
+
     twr_data_stream_init(&sm_voltage, 1, &sm_voltage_buffer);
     twr_data_stream_init(&sm_battery_pct, 1, &sm_battery_pct_buffer);
     twr_data_stream_init(&sm_temperature, 1, &sm_temperature_buffer);
@@ -676,6 +714,9 @@ void application_init(void)
     twr_module_co2_init();
     twr_module_co2_set_update_interval(MEASURE_INTERVAL_CO2);
     twr_module_co2_set_event_handler(co2_module_event_handler, NULL);
+
+    //ABC calibration
+    auto_calibration_task_id = twr_scheduler_register(auto_calibration_task, NULL, twr_tick_get() + AUTOMATIC_CALIBRATION_INTERVAL);
 
     // Initialize battery
     twr_module_battery_init();
@@ -740,7 +781,7 @@ void application_init(void)
 void application_task(void)
 {
 
-   if(!is_connected) {
+   if(!is_connected && !calibration_task_id) {
        twr_scheduler_plan_current_relative(SEND_DATA_INTERVAL);
        return;
    }
@@ -759,7 +800,6 @@ void application_task(void)
     {
         buffer[1] = ceil(voltage_avg * 10.f);
     }
-
     
     float battery_pct_avg = NAN;
 
